@@ -2099,7 +2099,7 @@ _G.KemiAI_Stop = function()
     pcall(function() RunService:UnbindFromRenderStep(SkillState.bindName) end)
     SkillState.active = false
     notifyRepairEnded(); releaseShift(); stopMoving()
-    resetThreat(); resetFlee(); resetNavWatchdog(); resetPathState()
+    resetThreat(); resetFlee(); resetNavWatchdog(); resetPerception(); resetPathState()
     if readyGui then pcall(function() readyGui:Destroy() end); readyGui = nil; readyLabel = nil end
     log("Stopped")
 end
