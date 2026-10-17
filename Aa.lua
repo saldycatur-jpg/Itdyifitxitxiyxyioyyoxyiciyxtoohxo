@@ -284,6 +284,16 @@ local function setLocalAttr(key, val)
     local ch = getChar()
     if ch then pcall(function() ch:SetAttribute(key, val) end) end
 end
+-- Primary action button trigger
+local SkillState = {
+    active = false,
+    bindName = "KemiAI_SkillCheck_Trigger",
+    triggerInterval = 0.05,
+    lastTrigger = 0,
+    triggerCount = 0,
+    visConn = nil,
+    promptConn = nil,
+}
 
 -- Primary action button trigger
 local function pressActionButton()
@@ -305,7 +315,7 @@ local function pressActionButton()
     local cy = p.Y + (s.Y / 2) + i.Y
     pcall(function()
         VirtualInputManager:SendTouchEvent(TouchID, 0, cx, cy)
-        task.wait(0.02)
+        task.wait(0)
         VirtualInputManager:SendTouchEvent(TouchID, 2, cx, cy)
     end)
     return true
@@ -518,32 +528,118 @@ end
 -- ============================================================================
 local Skill = { rsConn = nil }  -- kept as compat stub
 
+local function TriggerSkillCheckButton()
+    local current = localPlayer:FindFirstChild("PlayerGui")
+    if not current then return false end
+    for _, seg in ipairs({"Survivor-mob", "Controls", "action", "check"}) do
+        current = current and current:FindFirstChild(seg)
+    end
+    if not current or not current:IsA("GuiObject") then return false end
+    if not current.Visible then return false end
+    local sz = current.AbsoluteSize
+    if sz.X <= 0 or sz.Y <= 0 then return false end
+    local p, s, i = current.AbsolutePosition, current.AbsoluteSize, GuiService:GetGuiInset()
+    local cx = p.X + (s.X / 2) + i.X
+    local cy = p.Y + (s.Y / 2) + i.Y
+    pcall(function()
+        VirtualInputManager:SendTouchEvent(CONFIG.TOUCH_ID, 0, cx, cy)
+        VirtualInputManager:SendTouchEvent(CONFIG.TOUCH_ID, 2, cx, cy)
+    end)
+    return true
+end
+
 local function InitializeAutobuy()
     if not config.autoSkillCheckEnabled then
         log("Skillcheck: disabled by config")
         return
     end
-    local url = CONFIG.SKILLCHECK_SCRIPT_URL
-    if not url or url == "" then
-        log("Skillcheck: SKILLCHECK_SCRIPT_URL not set — skipping external load")
-        return
-    end
-    if not game.HttpGet then
-        log("Skillcheck: HttpGet unavailable in this environment")
-        return
-    end
+
+    if SkillState.visConn then SkillState.visConn:Disconnect(); SkillState.visConn = nil end
+    if SkillState.promptConn then SkillState.promptConn:Disconnect(); SkillState.promptConn = nil end
+    pcall(function() RunService:UnbindFromRenderStep(SkillState.bindName) end)
+    SkillState.active = false
+
     task.spawn(function()
-        local ok, err = pcall(function()
-            local src = game:HttpGet(url)
-            if type(src) ~= "string" or #src == 0 then
-                error("empty response")
+        local pg = localPlayer:FindFirstChild("PlayerGui")
+        if not pg then return end
+        local prompt = pg:FindFirstChild("SkillCheckPromptGui")
+        if not prompt then prompt = pg:WaitForChild("SkillCheckPromptGui", 10) end
+        if not prompt then log("Skillcheck: prompt GUI not found"); return end
+
+        local function snapLineOnce(check)
+            local line = check:FindFirstChild("Line")
+            local goal = check:FindFirstChild("Goal")
+            if not line or not goal then return end
+            local gr = goal.Rotation % 360
+            line.Rotation = (gr + CONFIG.SKILLCHECK_SNAP_OFF) % 360
+        end
+
+        local function startBind(check)
+            if not check then return end
+            pcall(function() RunService:UnbindFromRenderStep(SkillState.bindName) end)
+            snapLineOnce(check)
+            SkillState.lastTrigger = 0
+            SkillState.triggerCount = 0
+            SkillState.active = true
+
+            RunService:BindToRenderStep(SkillState.bindName, Enum.RenderPriority.Last.Value, function()
+                local s = SkillState
+                if not s.active then return end
+                if not check or not check.Parent or not check.Visible then return end
+
+                local line = check:FindFirstChild("Line")
+                local goal = check:FindFirstChild("Goal")
+                if not line or not goal then return end
+
+                local lr = line.Rotation % 360
+                local gr = goal.Rotation % 360
+                local ss = (gr + CONFIG.SKILLCHECK_TRIGGER_START) % 360
+                local se = (gr + CONFIG.SKILLCHECK_TRIGGER_END) % 360
+                local inRange = false
+                if ss > se then
+                    if lr >= ss or lr <= se then inRange = true end
+                else
+                    if lr >= ss and lr <= se then inRange = true end
+                end
+
+                if inRange then
+                    local now = tick()
+                    if now - s.lastTrigger >= s.triggerInterval then
+                        s.lastTrigger = now
+                        s.triggerCount = s.triggerCount + 1
+                        TriggerSkillCheckButton()
+                    end
+                end
+            end)
+        end
+
+        local function bindCheck(check)
+            if not check then return end
+            if SkillState.visConn then SkillState.visConn:Disconnect(); SkillState.visConn = nil end
+            SkillState.visConn = check:GetPropertyChangedSignal("Visible"):Connect(function()
+                if localPlayer.Team and localPlayer.Team.Name == "Survivors" and check.Visible then
+                    startBind(check)
+                else
+                    pcall(function() RunService:UnbindFromRenderStep(SkillState.bindName) end)
+                    SkillState.active = false
+                end
+            end)
+            if check.Visible and localPlayer.Team and localPlayer.Team.Name == "Survivors" then
+                startBind(check)
             end
-            local fn, compileErr = loadstring(src)
-            if not fn then error("compile failed: " .. tostring(compileErr)) end
-            fn()
+        end
+
+        local existingCheck = prompt:FindFirstChild("Check")
+        if existingCheck then bindCheck(existingCheck) end
+
+        SkillState.promptConn = prompt.ChildAdded:Connect(function(child)
+            if child.Name == "Check" then
+                task.wait(0.05)
+                bindCheck(child)
+            end
         end)
-        if ok then log("Skillcheck: external script loaded")
-        else log("Skillcheck: load error - " .. tostring(err)) end
+
+        log("Skillcheck: native trigger initialized")
     end)
 end
 
@@ -1998,8 +2094,12 @@ end)
 _G.KemiAI_Stop = function()
     if roleWatcherConnection then roleWatcherConnection:Disconnect(); roleWatcherConnection = nil end
     if Skill.rsConn then Skill.rsConn:Disconnect(); Skill.rsConn = nil end
+    if SkillState.visConn then SkillState.visConn:Disconnect(); SkillState.visConn = nil end
+    if SkillState.promptConn then SkillState.promptConn:Disconnect(); SkillState.promptConn = nil end
+    pcall(function() RunService:UnbindFromRenderStep(SkillState.bindName) end)
+    SkillState.active = false
     notifyRepairEnded(); releaseShift(); stopMoving()
-    resetThreat(); resetFlee(); resetNavWatchdog(); resetPerception(); resetPathState()
+    resetThreat(); resetFlee(); resetNavWatchdog(); resetPathState()
     if readyGui then pcall(function() readyGui:Destroy() end); readyGui = nil; readyLabel = nil end
     log("Stopped")
 end
