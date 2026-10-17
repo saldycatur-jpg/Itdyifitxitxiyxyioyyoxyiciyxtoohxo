@@ -2101,4 +2101,4 @@ _G.KemiAI_Stop = function()
     log("Stopped")
 end
 
-log("AI ready — Stable Path + Survivor
+log("AI ready — Stable Path + Survivor")
